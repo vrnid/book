@@ -140,18 +140,24 @@
         // 务必替换 'apiKey', 'authDomain', 'projectId', 'storageBucket', 'messagingSenderId', 'appId' 的占位符。
         const firebaseConfig = {
           apiKey: "AIzaSyAXlYCZr6F1Nunieg7CDeYM0O_6iX1AZq0",
-            authDomain: "wuzi-1ecf3.firebaseapp.com",
-            projectId: "wuzi-1ecf3",
-            storageBucket: "wuzi-1ecf3.firebasestorage.app",
-            messagingSenderId: "274766423411",
-            appId: "1:274766423411:web:ef1549f49be22bf53b9106",
-            measurementId: "G-EFPFDMRSMZ"
+          authDomain: "wuzi-1ecf3.firebaseapp.com",
+          projectId: "wuzi-1ecf3",
+          storageBucket: "wuzi-1ecf3.firebasestorage.app",
+          messagingSenderId: "274766423411",
+          appId: "1:274766423411:web:ef1549f49be22bf53b9106",
+          measurementId: "G-EFPFDMRSMZ"
         };
 
         // 从 firebaseConfig 中提取 appId，因为它是 Firestore 路径的一部分
-        // 注意：这里的 currentAppId 应该使用 firebaseConfig.appId，而不是依赖 Canvas 环境的 __app_id
         const currentAppId = firebaseConfig.appId;
 
+        // 生成一个短的用户ID（8-10位）
+        function generateShortUserId(baseId) {
+            // 使用 baseId（无论是 Firebase UID 还是随机 UUID）的哈希值或截取来生成短ID
+            // 这里简单地截取前 10 位，确保长度在 8-10 位之间
+            const shortId = baseId.substring(0, 10);
+            return shortId;
+        }
 
         // --- UI 更新函数 ---
         // 此函数负责根据当前全局变量的状态更新整个UI
@@ -412,15 +418,18 @@
 
                 onAuthStateChanged(auth, async (user) => {
                     if (user) {
-                        userId = user.uid;
+                        // 无论 Firebase 返回什么 UID，都将其截取为 10 位
+                        userId = generateShortUserId(user.uid);
                     } else {
                         // 使用匿名登录
                         try {
                             await signInAnonymously(auth);
+                            // 如果匿名认证成功， user 对象会更新，onAuthStateChanged 会再次触发
+                            // 因此这里不需要再次处理 userId，它会在下次触发时被截取
                         } catch (error) {
                             console.error('Firebase 匿名认证错误:', error);
-                            // 如果认证失败，使用随机 UUID 作为备用用户ID
-                            userId = crypto.randomUUID();
+                            // 如果匿名认证失败，则生成一个短的随机 UUID 作为备用用户ID
+                            userId = generateShortUserId(crypto.randomUUID());
                         }
                     }
                     // 认证完成后，隐藏加载动画并设置Firestore监听器
