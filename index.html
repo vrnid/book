@@ -111,7 +111,7 @@
     <!-- Firebase SDKs - 类型为 module 以支持 import 语法 -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp, doc, deleteDoc, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // 全局变量来模拟 React 的 state
@@ -128,13 +128,30 @@
         let isModalShown = false; // 模态框是否显示
         let messageToDeleteId = null; // 要删除的留言ID
 
+        // --- 管理员设置 ---
+        // 请将此ID替换为您希望作为管理员的设备ID。
+        // 在网页加载后，您的用户ID会显示在留言输入框上方。
+        // 为了安全起见，在真实生产环境中，您应该使用 Firebase Authentication 来管理管理员角色，而不是硬编码ID。
+        const ADMIN_USER_ID = "YOUR_ADMIN_USER_ID_HERE"; // <-- 请将此替换为您自己的用户ID！
 
-        const ADMIN_USER_ID = "14352607679857038531";
+        // Firebase 配置信息
+        // IMPORTANT: 请将此处替换为您的 Firebase 项目的实际配置。
+        // 访问 Firebase 控制台 (console.firebase.google.com) -> 项目设置 (Project settings) -> 您的应用 (Your apps) -> 选择您的 Web 应用 -> 配置 (Config)，即可获取。
+        // 务必替换 'apiKey', 'authDomain', 'projectId', 'storageBucket', 'messagingSenderId', 'appId' 的占位符。
+        const firebaseConfig = {
+          apiKey: "AIzaSyAXlYCZr6F1Nunieg7CDeYM0O_6iX1AZq0",
+            authDomain: "wuzi-1ecf3.firebaseapp.com",
+            projectId: "wuzi-1ecf3",
+            storageBucket: "wuzi-1ecf3.firebasestorage.app",
+            messagingSenderId: "274766423411",
+            appId: "1:274766423411:web:ef1549f49be22bf53b9106",
+            measurementId: "G-EFPFDMRSMZ"
+        };
 
-        // 从 Canvas 环境获取全局变量 (如果可用)
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        // 从 firebaseConfig 中提取 appId，因为它是 Firestore 路径的一部分
+        // 注意：这里的 currentAppId 应该使用 firebaseConfig.appId，而不是依赖 Canvas 环境的 __app_id
+        const currentAppId = firebaseConfig.appId;
+
 
         // --- UI 更新函数 ---
         // 此函数负责根据当前全局变量的状态更新整个UI
@@ -337,7 +354,7 @@
             }
 
             try {
-                const messagesCollectionRef = collection(db, `artifacts/${appId}/public/data/guestbook_messages`);
+                const messagesCollectionRef = collection(db, `artifacts/${currentAppId}/public/data/guestbook_messages`);
                 await addDoc(messagesCollectionRef, {
                     userId: userId,
                     message: newMessageText,
@@ -373,7 +390,7 @@
             updateUI(); // 更新UI隐藏模态框
 
             try {
-                const messageDocRef = doc(db, `artifacts/${appId}/public/data/guestbook_messages`, messageToDeleteId);
+                const messageDocRef = doc(db, `artifacts/${currentAppId}/public/data/guestbook_messages`, messageToDeleteId);
                 await deleteDoc(messageDocRef);
                 messageToDeleteId = null; // 清空要删除的留言ID
             } catch (error) {
@@ -397,14 +414,11 @@
                     if (user) {
                         userId = user.uid;
                     } else {
+                        // 使用匿名登录
                         try {
-                            if (initialAuthToken) {
-                                await signInWithCustomToken(auth, initialAuthToken);
-                            } else {
-                                await signInAnonymously(auth);
-                            }
+                            await signInAnonymously(auth);
                         } catch (error) {
-                            console.error('Firebase 认证错误:', error);
+                            console.error('Firebase 匿名认证错误:', error);
                             // 如果认证失败，使用随机 UUID 作为备用用户ID
                             userId = crypto.randomUUID();
                         }
@@ -423,7 +437,7 @@
         // 设置 Firestore 实时监听器
         function setupFirestoreListener() {
             if (db && userId) {
-                const messagesCollectionRef = collection(db, `artifacts/${appId}/public/data/guestbook_messages`);
+                const messagesCollectionRef = collection(db, `artifacts/${currentAppId}/public/data/guestbook_messages`);
                 const q = query(messagesCollectionRef); // 移除了orderBy以避免索引问题，数据将在客户端排序
 
                 onSnapshot(q, (snapshot) => {
