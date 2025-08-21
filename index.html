@@ -25,7 +25,14 @@
     </style>
 </head>
 <body class="font-sans">
-    <div id="app" class="min-h-screen bg-gradient-to-br from-purple-50 to-indigo-100 p-4 sm:p-6 lg:p-8 flex items-center justify-center">
+    <div id="app" class="min-h-screen bg-gradient-to-br from-purple-50 to-indigo-100 p-4 sm:p-6 lg:p-8 flex items-center justify-center relative">
+        <!-- 管理员登录按钮 - 位于左上角，默认透明但可点击 -->
+        <button id="adminLoginBtn" class="absolute top-4 left-4 p-2 bg-gray-100 text-gray-600 rounded-full text-xs hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-gray-300 transition-all duration-200 shadow-sm opacity-0 hover:opacity-100 pointer-events-auto" aria-label="管理员登录">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1" />
+            </svg>
+        </button>
+
         <!-- 主要内容将在 JavaScript 中动态插入 -->
         <div class="bg-white p-6 sm:p-8 rounded-3xl shadow-2xl shadow-indigo-200 w-full max-w-2xl transform transition-all duration-500 hover:scale-[1.01] border border-indigo-100">
             <h1 class="text-4xl sm:text-5xl font-extrabold text-center bg-clip-text text-transparent bg-gradient-to-r from-purple-600 to-indigo-700 mb-8 border-b-2 border-indigo-100 pb-4">
@@ -106,6 +113,35 @@
                 </div>
             </div>
         </div>
+
+        <!-- 管理员登录模态框 -->
+        <div id="adminLoginModal" class="fixed inset-0 bg-gray-900 bg-opacity-70 flex items-center justify-center z-50 p-4 hidden">
+            <div class="bg-white p-7 rounded-2xl shadow-xl transform scale-105 w-full max-w-md border border-gray-200">
+                <h3 class="text-2xl font-bold mb-4 text-gray-800 text-center">管理员登录</h3>
+                <p class="text-gray-700 mb-6 text-center leading-relaxed">请输入管理员密钥。</p>
+                <input
+                    type="password"
+                    id="secretKeyInput"
+                    class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-400 focus:border-transparent outline-none transition-all duration-200 text-center text-lg"
+                    placeholder="密钥"
+                />
+                <p id="adminLoginError" class="hidden text-red-600 text-sm mt-3 text-center font-medium"></p>
+                <div class="flex justify-center space-x-4 mt-6">
+                    <button
+                        id="cancelAdminLoginBtn"
+                        class="px-6 py-3 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-400 transition-all duration-200 font-medium shadow-sm"
+                    >
+                        取消
+                    </button>
+                    <button
+                        id="submitSecretKeyBtn"
+                        class="px-6 py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-400 transition-all duration-200 font-medium shadow-sm"
+                    >
+                        登录
+                    </button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Firebase SDKs - 类型为 module 以支持 import 语法 -->
@@ -125,10 +161,13 @@
         let currentImagePreview = null; // 图片预览的 Data URL
         let currentImageError = ''; // 图片错误信息
         let isSending = false; // 是否正在发送留言
-        let isModalShown = false; // 模态框是否显示
+        let isConfirmModalShown = false; // 确认删除模态框是否显示
+        let isAdminLoginModalShown = false; // 管理员登录模态框是否显示
         let messageToDeleteId = null; // 要删除的留言ID
+        let secretKeyInput = ''; // 管理员密钥输入框的值
+        let adminLoginError = ''; // 管理员登录错误信息
 
-        const ADMIN_USER_ID = "YOUR_ADMIN_USER_ID_HERE"; // <-- 请将此替换为您自己的用户ID！
+        const ADMIN_MODE_USER_ID = "admin"; // 可以更改为其他任何您喜欢的短字符串
 
         const firebaseConfig = {
           apiKey: "AIzaSyAXlYCZr6F1Nunieg7CDeYM0O_6iX1AZq0",
@@ -145,10 +184,7 @@
 
         // 生成一个短的用户ID（8-10位）
         function generateShortUserId(baseId) {
-            // 使用 baseId（无论是 Firebase UID 还是随机 UUID）的哈希值或截取来生成短ID
-            // 这里简单地截取前 10 位，确保长度在 8-10 位之间
-            const shortId = baseId.substring(0, 10);
-            return shortId;
+            return baseId.substring(0, 10);
         }
 
         // --- UI 更新函数 ---
@@ -160,7 +196,7 @@
                 userIdSpan.textContent = userId;
                 const adminTag = document.getElementById('adminTag');
                 if (adminTag) {
-                    if (userId === ADMIN_USER_ID) {
+                    if (userId === ADMIN_MODE_USER_ID) {
                         adminTag.classList.remove('hidden');
                     } else {
                         adminTag.classList.add('hidden');
@@ -251,13 +287,13 @@
                             <div class="flex justify-between items-center border-t border-gray-100 pt-3">
                                 <span class="text-sm text-gray-500 flex items-center">
                                     <span class="font-semibold text-indigo-600 mr-2 break-all">@${msg.userId}</span>
-                                    ${msg.userId === ADMIN_USER_ID ? `
+                                    ${userId === ADMIN_MODE_USER_ID ? `
                                         <span class="ml-1 px-1.5 py-0.5 bg-green-100 text-green-700 text-xs font-bold rounded-full">管理员</span>
                                     ` : ''}
                                     <span class="text-gray-400 ml-2">•</span>
                                     <span class="ml-2">${msg.timestamp.toLocaleString()}</span>
                                 </span>
-                                ${(userId === msg.userId || userId === ADMIN_USER_ID) ? `
+                                ${(userId === msg.userId || userId === ADMIN_MODE_USER_ID) ? `
                                     <button
                                         data-message-id="${msg.id}"
                                         class="delete-btn ml-3 p-2 bg-red-100 text-red-600 rounded-full text-xs hover:bg-red-200 focus:outline-none focus:ring-2 focus:ring-red-300 focus:ring-offset-1 transition-all duration-200 shadow-sm"
@@ -279,13 +315,36 @@
                 }
             }
 
-            // 控制模态框显示
+            // 控制确认删除模态框显示
             const confirmModal = document.getElementById('confirmModal');
             if (confirmModal) {
-                if (isModalShown) {
+                if (isConfirmModalShown) {
                     confirmModal.classList.remove('hidden');
                 } else {
                     confirmModal.classList.add('hidden');
+                }
+            }
+
+            // 控制管理员登录模态框显示
+            const adminLoginModal = document.getElementById('adminLoginModal');
+            const secretKeyInputElem = document.getElementById('secretKeyInput');
+            const adminLoginErrorElem = document.getElementById('adminLoginError');
+
+            if (adminLoginModal) {
+                if (isAdminLoginModalShown) {
+                    adminLoginModal.classList.remove('hidden');
+                    // 确保每次打开时输入框是空的，错误信息是隐藏的
+                    if (secretKeyInputElem) secretKeyInputElem.value = secretKeyInput;
+                    if (adminLoginErrorElem) {
+                        adminLoginErrorElem.textContent = adminLoginError;
+                        if (adminLoginError) {
+                            adminLoginErrorElem.classList.remove('hidden');
+                        } else {
+                            adminLoginErrorElem.classList.add('hidden');
+                        }
+                    }
+                } else {
+                    adminLoginModal.classList.add('hidden');
                 }
             }
         }
@@ -376,7 +435,7 @@
         // 显示确认删除模态框
         function confirmDelete(id) {
             messageToDeleteId = id;
-            isModalShown = true;
+            isConfirmModalShown = true;
             updateUI(); // 显示模态框
         }
 
@@ -384,7 +443,7 @@
         async function handleDeleteMessage() {
             if (!messageToDeleteId) return;
 
-            isModalShown = false; // 立即隐藏模态框
+            isConfirmModalShown = false; // 立即隐藏模态框
             updateUI(); // 更新UI隐藏模态框
 
             try {
@@ -396,6 +455,46 @@
                 // 可以在这里显示一个用户友好的错误消息
             }
         }
+
+        // 显示管理员登录模态框
+        function showAdminLoginModal() {
+            isAdminLoginModalShown = true;
+            secretKeyInput = ''; // 每次打开都清空密码输入框
+            adminLoginError = ''; // 清空错误信息
+            updateUI();
+        }
+
+        // 处理管理员密钥输入
+        function handleSecretKeyInput(e) {
+            secretKeyInput = e.target.value;
+            adminLoginError = ''; // 清除错误信息
+            updateUI();
+        }
+
+        // 检查管理员密钥并登录
+        function checkSecretKey() {
+            // Base64 编码后的 "shadowbook"
+            const ENCODED_SECRET_KEY = "c2hhZG93Ym9vaw=="; 
+            try {
+                const encodedInput = btoa(secretKeyInput);
+                if (encodedInput === ENCODED_SECRET_KEY) {
+                    userId = ADMIN_MODE_USER_ID; // 设置为管理员ID
+                    isAdminLoginModalShown = false; // 隐藏管理员登录模态框
+                    secretKeyInput = ''; // 清空密码
+                    alert('已进入管理员模式！'); // 成功提示
+                    updateUI(); // 更新UI以显示管理员状态
+                } else {
+                    adminLoginError = '密钥错误，请重试。';
+                    secretKeyInput = ''; // 清空密码
+                    updateUI(); // 显示错误信息并清空输入
+                }
+            } catch (e) {
+                adminLoginError = '输入包含无效字符。'; // 处理非 ASCII 输入导致的编码错误
+                secretKeyInput = '';
+                updateUI();
+            }
+        }
+
 
         // --- Firebase 初始化和监听器设置 ---
 
@@ -467,10 +566,21 @@
             document.getElementById('imageInput').addEventListener('change', handleImageChange);
             document.getElementById('sendMessageBtn').addEventListener('click', handleSendMessage);
             document.getElementById('cancelDeleteBtn').addEventListener('click', () => {
-                isModalShown = false;
+                isConfirmModalShown = false;
                 updateUI();
             });
             document.getElementById('confirmDeleteBtn').addEventListener('click', handleDeleteMessage);
+
+            // 新增：管理员登录按钮和模态框的事件监听
+            document.getElementById('adminLoginBtn').addEventListener('click', showAdminLoginModal);
+            document.getElementById('secretKeyInput').addEventListener('input', handleSecretKeyInput);
+            document.getElementById('cancelAdminLoginBtn').addEventListener('click', () => {
+                isAdminLoginModalShown = false;
+                secretKeyInput = '';
+                adminLoginError = '';
+                updateUI();
+            });
+            document.getElementById('submitSecretKeyBtn').addEventListener('click', checkSecretKey);
         }
 
         // 页面加载完成后初始化 Firebase 并绑定事件
@@ -481,5 +591,3 @@
     </script>
 </body>
 </html>
-
-
