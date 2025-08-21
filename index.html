@@ -1,346 +1,468 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, collection, addDoc, query, orderBy, onSnapshot, serverTimestamp, doc, deleteDoc } from 'firebase/firestore';
-
-// Define the main App component for the guestbook
-const App = () => {
-    // State variables to manage Firebase instances, user info, messages, and loading state
-    const [app, setApp] = useState(null);
-    const [db, setDb] = useState(null);
-    const [auth, setAuth] = useState(null);
-    const [userId, setUserId] = useState(null); // Stores the current user's ID
-    const [messages, setMessages] = useState([]); // Stores the list of guestbook messages
-    const [newMessage, setNewMessage] = useState(''); // Stores the content of the new message input
-    const [loading, setLoading] = useState(true); // Manages loading state for initial data fetch
-    const [sending, setSending] = useState(false); // Manages sending state for new messages
-    const [showConfirmModal, setShowConfirmModal] = useState(false); // State for delete confirmation modal
-    const [messageToDelete, setMessageToDelete] = useState(null); // Stores the ID of the message to be deleted
-    const [selectedImage, setSelectedImage] = useState(null); // Stores the selected image file object
-    const [imagePreview, setImagePreview] = useState(null); // Stores the Data URL for image preview
-    const [imageError, setImageError] = useState(''); // Stores image upload error messages
-
-    const fileInputRef = useRef(null); // Ref to clear the file input field
-
-    // Global variables provided by the Canvas environment
-    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-    const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-    const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-
-    // --- 管理员设置 ---
-    const ADMIN_USER_ID = "14352607679857038531"; // 您可以修改这个ID
-
-    // Effect hook for Firebase initialization and authentication
-    useEffect(() => {
-        const initFirebase = async () => {
-            try {
-                // Initialize Firebase app
-                const firebaseApp = initializeApp(firebaseConfig);
-                setApp(firebaseApp);
-
-                // Get Auth and Firestore instances
-                const authInstance = getAuth(firebaseApp);
-                const dbInstance = getFirestore(firebaseApp);
-                setAuth(authInstance);
-                setDb(dbInstance);
-
-                // Listen for authentication state changes
-                onAuthStateChanged(authInstance, async (user) => {
-                    if (user) {
-                        // User is signed in
-                        setUserId(user.uid);
-                    } else {
-                        // No user is signed in, sign in anonymously or with custom token
-                        try {
-                            if (initialAuthToken) {
-                                await signInWithCustomToken(authInstance, initialAuthToken);
-                            } else {
-                                await signInAnonymously(authInstance);
-                            }
-                        } catch (error) {
-                            console.error('Firebase authentication error:', error);
-                            // Set a random UUID as userId if sign-in fails
-                            setUserId(crypto.randomUUID());
-                        }
-                    }
-                    setLoading(false); // Authentication is ready, stop loading
-                });
-            } catch (error) {
-                console.error('Failed to initialize Firebase:', error);
-                setLoading(false);
-            }
-        };
-
-        initFirebase();
-    }, [appId, firebaseConfig, initialAuthToken]); // Dependencies for this effect
-
-    // Effect hook for fetching and listening to messages
-    useEffect(() => {
-        // Only fetch messages if db and userId are available
-        if (db && userId) {
-            // Define the Firestore collection path for public messages
-            // This structure ensures data is stored under the specific app ID and marked as public
-            const messagesCollectionRef = collection(db, `artifacts/${appId}/public/data/guestbook_messages`);
-
-            // Create a query to order messages by their creation timestamp (descending)
-            // Note: Firestore's `orderBy` requires an index for more complex queries.
-            // For simplicity and to avoid index issues, we'll fetch and sort in memory if needed,
-            // but `serverTimestamp` is often ordered naturally.
-            // If complex sorting is needed, client-side sorting is preferred to avoid index creation.
-            const q = query(messagesCollectionRef /*, orderBy('timestamp', 'desc')*/);
-
-            // Set up a real-time listener for messages
-            const unsubscribe = onSnapshot(q, (snapshot) => {
-                const fetchedMessages = [];
-                snapshot.forEach((doc) => {
-                    const data = doc.data();
-                    fetchedMessages.push({
-                        id: doc.id,
-                        ...data,
-                        // Convert Firestore timestamp to Date object for consistent sorting
-                        timestamp: data.timestamp ? data.timestamp.toDate() : new Date(),
-                    });
-                });
-                // Sort messages by timestamp in descending order (most recent first)
-                fetchedMessages.sort((a, b) => b.timestamp - a.timestamp);
-                setMessages(fetchedMessages);
-            }, (error) => {
-                console.error("Error fetching messages:", error);
-            });
-
-            // Clean up the listener when the component unmounts or dependencies change
-            return () => unsubscribe();
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>留言板</title>
+    <!-- 引入 Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* 为留言列表自定义滚动条样式 */
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 8px; /* 滚动条的宽度 */
         }
-    }, [db, userId, appId]); // Dependencies for this effect
-
-    // Function to handle image file selection
-    const handleImageChange = (e) => {
-        const file = e.target.files[0];
-        setImageError(''); // Clear previous errors
-
-        if (file) {
-            // Check file size (500KB limit for base64 in Firestore, leaves room for text)
-            if (file.size > 500 * 1024) { // 500 KB
-                setImageError('图片文件过大，请选择小于 500KB 的图片。');
-                setSelectedImage(null);
-                setImagePreview(null);
-                if (fileInputRef.current) fileInputRef.current.value = ""; // Clear file input
-                return;
-            }
-
-            setSelectedImage(file);
-            const reader = new FileReader();
-            reader.onloadend = () => {
-                setImagePreview(reader.result); // Set base64 string for preview
-            };
-            reader.readAsDataURL(file); // Read file as Data URL (Base64)
-        } else {
-            setSelectedImage(null);
-            setImagePreview(null);
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: #e0e7ff; /* 轨道背景色 */
+            border-radius: 10px; /* 轨道圆角 */
         }
-    };
-
-    // Function to handle sending a new message
-    const handleSendMessage = async () => {
-        if (newMessage.trim() === '' && !selectedImage) return; // Don't send empty messages or no message/image
-
-        setSending(true); // Set sending state to true
-        setImageError(''); // Clear any image errors
-
-        let imageData = null;
-        if (selectedImage) {
-            // Re-check image size before sending, in case state was manipulated
-            if (selectedImage.size > 500 * 1024) {
-                setImageError('图片文件过大，请选择小于 500KB 的图片。');
-                setSending(false);
-                return;
-            }
-            // Read image as Base64 for storage
-            const reader = new FileReader();
-            reader.readAsDataURL(selectedImage);
-            imageData = await new Promise((resolve) => {
-                reader.onloadend = () => resolve(reader.result);
-            });
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #a78bfa; /* 滚动条滑块的颜色 */
+            border-radius: 10px; /* 滑块圆角 */
         }
-
-        try {
-            // Define the Firestore collection path
-            const messagesCollectionRef = collection(db, `artifacts/${appId}/public/data/guestbook_messages`);
-            // Add a new document to the 'guestbook_messages' collection
-            await addDoc(messagesCollectionRef, {
-                userId: userId, // Store the sender's user ID
-                message: newMessage, // Store the message content
-                imageData: imageData, // Store the Base64 image data (if any)
-                timestamp: serverTimestamp(), // Use Firestore's server timestamp for accurate ordering
-            });
-            setNewMessage(''); // Clear the input field after sending
-            setSelectedImage(null); // Clear selected image
-            setImagePreview(null); // Clear image preview
-            if (fileInputRef.current) fileInputRef.current.value = ""; // Clear file input
-        } catch (error) {
-            console.error('Error adding message:', error);
-            // Optionally show an error message to the user
-        } finally {
-            setSending(false); // Reset sending state
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: #8b5cf6; /* 滑块悬停时的颜色 */
         }
-    };
+    </style>
+</head>
+<body class="font-sans">
+    <div id="app" class="min-h-screen bg-gradient-to-br from-purple-50 to-indigo-100 p-4 sm:p-6 lg:p-8 flex items-center justify-center">
+        <!-- 主要内容将在 JavaScript 中动态插入 -->
+        <div class="bg-white p-6 sm:p-8 rounded-3xl shadow-2xl shadow-indigo-200 w-full max-w-2xl transform transition-all duration-500 hover:scale-[1.01] border border-indigo-100">
+            <h1 class="text-4xl sm:text-5xl font-extrabold text-center bg-clip-text text-transparent bg-gradient-to-r from-purple-600 to-indigo-700 mb-8 border-b-2 border-indigo-100 pb-4">
+                🎉 留言板 🎉
+            </h1>
 
-    // Function to show the confirmation modal for deleting a message
-    const confirmDelete = (messageId) => {
-        setMessageToDelete(messageId);
-        setShowConfirmModal(true);
-    };
+            <!-- 加载状态显示 -->
+            <div id="loading-spinner" class="flex justify-center items-center py-8">
+                <div class="animate-spin rounded-full h-12 w-12 border-b-4 border-purple-500"></div>
+                <p class="ml-4 text-gray-600 text-lg">加载中...</p>
+            </div>
 
-    // Function to handle the actual deletion of a message
-    const handleDeleteMessage = async () => {
-        if (!messageToDelete) return; // If no message is selected for deletion, do nothing
-
-        setShowConfirmModal(false); // Close the confirmation modal
-        try {
-            // Define the Firestore document reference for the message to be deleted
-            const messageDocRef = doc(db, `artifacts/${appId}/public/data/guestbook_messages`, messageToDelete);
-            await deleteDoc(messageDocRef); // Delete the document
-            setMessageToDelete(null); // Clear the message to delete state
-        } catch (error) {
-            console.error('Error deleting message:', error);
-            // Optionally show an error message to the user
-        }
-    };
-
-    // Render the guestbook UI
-    return (
-        <div className="min-h-screen bg-gradient-to-br from-purple-50 to-indigo-100 p-4 sm:p-6 lg:p-8 flex items-center justify-center font-sans">
-            <div className="bg-white p-6 sm:p-8 rounded-3xl shadow-2xl shadow-indigo-200 w-full max-w-2xl transform transition-all duration-500 hover:scale-[1.01] border border-indigo-100">
-                <h1 className="text-4xl sm:text-5xl font-extrabold text-center bg-clip-text text-transparent bg-gradient-to-r from-purple-600 to-indigo-700 mb-8 border-b-2 border-indigo-100 pb-4">
-                    🎉 留言板 🎉
-                </h1>
-
-                {loading ? (
-                    <div className="flex justify-center items-center py-8">
-                        <div className="animate-spin rounded-full h-12 w-12 border-b-4 border-purple-500"></div>
-                        <p className="ml-4 text-gray-600 text-lg">加载中...</p>
+            <!-- 主要内容区域，在加载完成后显示 -->
+            <div id="main-content" class="hidden">
+                <div class="mb-8 p-4 bg-indigo-50 rounded-2xl border border-indigo-200 shadow-inner">
+                    <p class="text-gray-700 text-sm mb-3">
+                        您的用户ID: <span id="currentUserId" class="font-semibold text-indigo-700 break-all"></span>
+                        <span id="adminTag" class="hidden ml-2 px-2 py-1 bg-green-200 text-green-800 text-xs font-bold rounded-full">管理员</span>
+                        <br />
+                        您可以使用此ID与其他用户区分开。
+                    </p>
+                    <textarea
+                        id="newMessageInput"
+                        class="w-full p-4 border border-indigo-300 rounded-xl focus:ring-4 focus:ring-indigo-400/50 focus:border-indigo-500 outline-none transition-all duration-300 resize-y min-h-[100px] max-h-[250px] shadow-sm text-gray-800 placeholder-gray-400 text-base"
+                        placeholder="在这里留下您的留言或上传图片..."
+                        rows="3"
+                    ></textarea>
+                    <input
+                        type="file"
+                        id="imageInput"
+                        accept="image/*"
+                        class="w-full mt-4 p-3 border border-indigo-300 rounded-xl text-gray-700 file:mr-4 file:py-2 file:px-5 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-200 file:text-indigo-700 hover:file:bg-indigo-300 transition-colors duration-200 cursor-pointer shadow-sm"
+                    />
+                    <div id="imagePreviewContainer" class="hidden mt-4 flex flex-col items-center p-3 bg-white rounded-xl shadow-md border border-gray-200">
+                        <p class="text-sm text-gray-600 mb-3 font-medium">图片预览:</p>
+                        <img id="imagePreview" src="" alt="图片预览" class="max-w-full h-56 object-contain rounded-lg shadow-inner border border-gray-100" />
                     </div>
-                ) : (
-                    <>
-                        <div className="mb-8 p-4 bg-indigo-50 rounded-2xl border border-indigo-200 shadow-inner">
-                            <p className="text-gray-700 text-sm mb-3">
-                                您的用户ID: <span className="font-semibold text-indigo-700 break-all">{userId}</span>
-                                {userId === ADMIN_USER_ID && (
-                                    <span className="ml-2 px-2 py-1 bg-green-200 text-green-800 text-xs font-bold rounded-full">管理员</span>
-                                )}
-                                <br />
-                                您可以使用此ID与其他用户区分开。
-                            </p>
-                            <textarea
-                                className="w-full p-4 border border-indigo-300 rounded-xl focus:ring-4 focus:ring-indigo-400/50 focus:border-indigo-500 outline-none transition-all duration-300 resize-y min-h-[100px] max-h-[250px] shadow-sm text-gray-800 placeholder-gray-400 text-base"
-                                placeholder="在这里留下您的留言或上传图片..."
-                                value={newMessage}
-                                onChange={(e) => setNewMessage(e.target.value)}
-                                rows="3"
-                            ></textarea>
-                            <input
-                                type="file"
-                                accept="image/*"
-                                onChange={handleImageChange}
-                                className="w-full mt-4 p-3 border border-indigo-300 rounded-xl text-gray-700 file:mr-4 file:py-2 file:px-5 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-200 file:text-indigo-700 hover:file:bg-indigo-300 transition-colors duration-200 cursor-pointer shadow-sm"
-                                ref={fileInputRef}
-                            />
-                            {imagePreview && (
-                                <div className="mt-4 flex flex-col items-center p-3 bg-white rounded-xl shadow-md border border-gray-200">
-                                    <p className="text-sm text-gray-600 mb-3 font-medium">图片预览:</p>
-                                    <img src={imagePreview} alt="图片预览" className="max-w-full h-56 object-contain rounded-lg shadow-inner border border-gray-100" />
-                                </div>
-                            )}
-                            {imageError && (
-                                <p className="text-red-600 text-sm mt-3 text-center font-medium">{imageError}</p>
-                            )}
-                            <button
-                                className={`w-full mt-5 px-6 py-3 rounded-xl text-white font-bold text-xl shadow-lg transform transition-all duration-300
-                                    ${sending ? 'bg-gradient-to-r from-purple-400 to-indigo-400 cursor-not-allowed' : 'bg-gradient-to-r from-purple-600 to-indigo-700 hover:from-purple-700 hover:to-indigo-800 active:scale-95'}`}
-                                onClick={handleSendMessage}
-                                disabled={sending || (newMessage.trim() === '' && !selectedImage)}
-                            >
-                                {sending ? '发送中...' : '发送留言'}
-                            </button>
-                            <p className="text-xs text-gray-500 mt-3 text-center">
-                                注意：为确保性能和存储限制，图片大小应小于 500KB。大型图片可能无法正常显示。
-                            </p>
-                        </div>
+                    <p id="imageError" class="hidden text-red-600 text-sm mt-3 text-center font-medium"></p>
+                    <button
+                        id="sendMessageBtn"
+                        class="w-full mt-5 px-6 py-3 rounded-xl text-white font-bold text-xl shadow-lg transform transition-all duration-300 bg-gradient-to-r from-purple-600 to-indigo-700 hover:from-purple-700 hover:to-indigo-800 active:scale-95"
+                    >
+                        发送留言
+                    </button>
+                    <p class="text-xs text-gray-500 mt-3 text-center">
+                        注意：为确保性能和存储限制，图片大小应小于 500KB。大型图片可能无法正常显示。
+                    </p>
+                </div>
 
-                        <div className="border-t-2 border-indigo-100 pt-6">
-                            <h2 className="text-2xl font-bold text-indigo-700 mb-5">所有留言</h2>
-                            {messages.length === 0 ? (
-                                <p className="text-gray-500 text-center py-4 text-lg">还没有留言。成为第一个留言的人吧！</p>
-                            ) : (
-                                <div className="space-y-5 max-h-[450px] overflow-y-auto pr-2 custom-scrollbar">
-                                    {messages.map((msg) => (
-                                        <div
-                                            key={msg.id}
-                                            className="bg-white p-5 rounded-2xl shadow-lg border border-gray-200 transform transition-all duration-300 hover:shadow-xl hover:translate-y-[-2px]"
-                                        >
-                                            {msg.imageData && (
-                                                <img src={msg.imageData} alt="留言图片" className="w-full h-auto max-h-64 object-contain rounded-lg mb-3 border border-gray-200 shadow-sm" />
-                                            )}
-                                            <p className="text-gray-800 text-lg mb-3 break-words leading-relaxed">
-                                                {msg.message}
-                                            </p>
-                                            <div className="flex justify-between items-center border-t border-gray-100 pt-3">
-                                                <span className="text-sm text-gray-500 flex items-center">
-                                                    <span className="font-semibold text-indigo-600 mr-2 break-all">@{msg.userId}</span>
-                                                    {msg.userId === ADMIN_USER_ID && (
-                                                        <span className="ml-1 px-1.5 py-0.5 bg-green-100 text-green-700 text-xs font-bold rounded-full">管理员</span>
-                                                    )}
-                                                    <span className="text-gray-400 ml-2">•</span>
-                                                    <span className="ml-2">{msg.timestamp.toLocaleString()}</span>
-                                                </span>
-                                                {/* Only show delete button if the message belongs to the current user OR if the current user is the admin */}
-                                                {(userId === msg.userId || userId === ADMIN_USER_ID) && (
-                                                    <button
-                                                        onClick={() => confirmDelete(msg.id)}
-                                                        className="ml-3 p-2 bg-red-100 text-red-600 rounded-full text-xs hover:bg-red-200 focus:outline-none focus:ring-2 focus:ring-red-300 focus:ring-offset-1 transition-all duration-200 shadow-sm"
-                                                        aria-label="删除留言"
-                                                    >
-                                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
-                                                            <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                                        </svg>
-                                                    </button>
-                                                )}
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>
-                            )}
-                        </div>
-                    </>
-                )}
-
-                {/* Custom Confirmation Modal */}
-                {showConfirmModal && (
-                    <div className="fixed inset-0 bg-gray-900 bg-opacity-70 flex items-center justify-center z-50 p-4">
-                        <div className="bg-white p-7 rounded-2xl shadow-xl transform scale-105 w-full max-w-md border border-gray-200">
-                            <h3 className="text-2xl font-bold mb-4 text-gray-800 text-center">确认删除</h3>
-                            <p className="text-gray-700 mb-7 text-center leading-relaxed">您确定要删除这条留言吗？此操作无法撤销。</p>
-                            <div className="flex justify-center space-x-4">
-                                <button
-                                    onClick={() => setShowConfirmModal(false)}
-                                    className="px-6 py-3 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-400 transition-all duration-200 font-medium shadow-sm"
-                                >
-                                    取消
-                                </button>
-                                <button
-                                    onClick={handleDeleteMessage}
-                                    className="px-6 py-3 bg-red-500 text-white rounded-lg hover:bg-red-600 focus:outline-none focus:ring-2 focus:ring-red-400 transition-all duration-200 font-medium shadow-sm"
-                                >
-                                    删除
-                                </button>
-                            </div>
-                        </div>
+                <div class="border-t-2 border-indigo-100 pt-6">
+                    <h2 class="text-2xl font-bold text-indigo-700 mb-5">所有留言</h2>
+                    <p id="noMessagesText" class="text-gray-500 text-center py-4 text-lg hidden">还没有留言。成为第一个留言的人吧！</p>
+                    <div id="messagesList" class="space-y-5 max-h-[450px] overflow-y-auto pr-2 custom-scrollbar">
+                        <!-- 留言将在这里动态加载 -->
                     </div>
-                )}
+                </div>
             </div>
         </div>
-    );
-};
 
-// Export the App component as default
-export default App;
+        <!-- 确认删除模态框 -->
+        <div id="confirmModal" class="fixed inset-0 bg-gray-900 bg-opacity-70 flex items-center justify-center z-50 p-4 hidden">
+            <div class="bg-white p-7 rounded-2xl shadow-xl transform scale-105 w-full max-w-md border border-gray-200">
+                <h3 class="text-2xl font-bold mb-4 text-gray-800 text-center">确认删除</h3>
+                <p class="text-gray-700 mb-7 text-center leading-relaxed">您确定要删除这条留言吗？此操作无法撤销。</p>
+                <div class="flex justify-center space-x-4">
+                    <button
+                        id="cancelDeleteBtn"
+                        class="px-6 py-3 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-400 transition-all duration-200 font-medium shadow-sm"
+                    >
+                        取消
+                    </button>
+                    <button
+                        id="confirmDeleteBtn"
+                        class="px-6 py-3 bg-red-500 text-white rounded-lg hover:bg-red-600 focus:outline-none focus:ring-2 focus:ring-red-400 transition-all duration-200 font-medium shadow-sm"
+                    >
+                        删除
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Firebase SDKs - 类型为 module 以支持 import 语法 -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp, doc, deleteDoc, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // 全局变量来模拟 React 的 state
+        let app;
+        let db;
+        let auth;
+        let userId = null;
+        let messages = [];
+        let newMessageText = ''; // 留言文本框的值
+        let selectedImageFile = null; // 选中的图片文件对象
+        let currentImagePreview = null; // 图片预览的 Data URL
+        let currentImageError = ''; // 图片错误信息
+        let isSending = false; // 是否正在发送留言
+        let isModalShown = false; // 模态框是否显示
+        let messageToDeleteId = null; // 要删除的留言ID
+
+
+        const ADMIN_USER_ID = "14352607679857038531";
+
+        // 从 Canvas 环境获取全局变量 (如果可用)
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // --- UI 更新函数 ---
+        // 此函数负责根据当前全局变量的状态更新整个UI
+        function updateUI() {
+            // 更新用户ID显示
+            const userIdSpan = document.getElementById('currentUserId');
+            if (userIdSpan) {
+                userIdSpan.textContent = userId;
+                const adminTag = document.getElementById('adminTag');
+                if (adminTag) {
+                    if (userId === ADMIN_USER_ID) {
+                        adminTag.classList.remove('hidden');
+                    } else {
+                        adminTag.classList.add('hidden');
+                    }
+                }
+            }
+
+            // 控制加载状态显示
+            const loadingSpinner = document.getElementById('loading-spinner');
+            const mainContent = document.getElementById('main-content');
+            if (loadingSpinner && mainContent) {
+                if (isSending) { // 如果正在发送，只显示发送按钮的加载状态
+                    loadingSpinner.classList.add('hidden');
+                    mainContent.classList.remove('hidden');
+                } else if (userId === null) { // 只有在首次加载和未认证时才显示全屏加载
+                    loadingSpinner.classList.remove('hidden');
+                    mainContent.classList.add('hidden');
+                } else {
+                    loadingSpinner.classList.add('hidden');
+                    mainContent.classList.remove('hidden');
+                }
+            }
+
+            // 更新留言文本框
+            const newMessageInput = document.getElementById('newMessageInput');
+            if (newMessageInput) {
+                newMessageInput.value = newMessageText;
+            }
+
+            // 更新图片预览
+            const imagePreviewContainer = document.getElementById('imagePreviewContainer');
+            const imagePreviewImg = document.getElementById('imagePreview');
+            if (imagePreviewContainer && imagePreviewImg) {
+                if (currentImagePreview) {
+                    imagePreviewImg.src = currentImagePreview;
+                    imagePreviewContainer.classList.remove('hidden');
+                } else {
+                    imagePreviewContainer.classList.add('hidden');
+                }
+            }
+
+            // 更新图片错误信息
+            const imageErrorElement = document.getElementById('imageError');
+            if (imageErrorElement) {
+                if (currentImageError) {
+                    imageErrorElement.textContent = currentImageError;
+                    imageErrorElement.classList.remove('hidden');
+                } else {
+                    imageErrorElement.classList.add('hidden');
+                }
+            }
+
+            // 更新发送按钮状态和样式
+            const sendMessageBtn = document.getElementById('sendMessageBtn');
+            if (sendMessageBtn) {
+                const isDisabled = isSending || (newMessageText.trim() === '' && !selectedImageFile);
+                sendMessageBtn.disabled = isDisabled;
+                if (isSending) {
+                    sendMessageBtn.textContent = '发送中...';
+                    sendMessageBtn.classList.remove('bg-gradient-to-r', 'from-purple-600', 'to-indigo-700', 'hover:from-purple-700', 'hover:to-indigo-800', 'active:scale-95');
+                    sendMessageBtn.classList.add('bg-gradient-to-r', 'from-purple-400', 'to-indigo-400', 'cursor-not-allowed');
+                } else {
+                    sendMessageBtn.textContent = '发送留言';
+                    sendMessageBtn.classList.remove('bg-gradient-to-r', 'from-purple-400', 'to-indigo-400', 'cursor-not-allowed');
+                    sendMessageBtn.classList.add('bg-gradient-to-r', 'from-purple-600', 'to-indigo-700', 'hover:from-purple-700', 'hover:to-indigo-800', 'active:scale-95');
+                }
+            }
+
+            // 更新留言列表
+            const messagesListDiv = document.getElementById('messagesList');
+            const noMessagesText = document.getElementById('noMessagesText');
+            if (messagesListDiv && noMessagesText) {
+                if (messages.length === 0) {
+                    messagesListDiv.innerHTML = ''; // 清空列表
+                    noMessagesText.classList.remove('hidden');
+                } else {
+                    noMessagesText.classList.add('hidden');
+                    messagesListDiv.innerHTML = messages.map(msg => `
+                        <div
+                            class="bg-white p-5 rounded-2xl shadow-lg border border-gray-200 transform transition-all duration-300 hover:shadow-xl hover:translate-y-[-2px]"
+                        >
+                            ${msg.imageData ? `
+                                <img src="${msg.imageData}" alt="留言图片" class="w-full h-auto max-h-64 object-contain rounded-lg mb-3 border border-gray-200 shadow-sm" />
+                            ` : ''}
+                            <p class="text-gray-800 text-lg mb-3 break-words leading-relaxed">
+                                ${msg.message}
+                            </p>
+                            <div class="flex justify-between items-center border-t border-gray-100 pt-3">
+                                <span class="text-sm text-gray-500 flex items-center">
+                                    <span class="font-semibold text-indigo-600 mr-2 break-all">@${msg.userId}</span>
+                                    ${msg.userId === ADMIN_USER_ID ? `
+                                        <span class="ml-1 px-1.5 py-0.5 bg-green-100 text-green-700 text-xs font-bold rounded-full">管理员</span>
+                                    ` : ''}
+                                    <span class="text-gray-400 ml-2">•</span>
+                                    <span class="ml-2">${msg.timestamp.toLocaleString()}</span>
+                                </span>
+                                ${(userId === msg.userId || userId === ADMIN_USER_ID) ? `
+                                    <button
+                                        data-message-id="${msg.id}"
+                                        class="delete-btn ml-3 p-2 bg-red-100 text-red-600 rounded-full text-xs hover:bg-red-200 focus:outline-none focus:ring-2 focus:ring-red-300 focus:ring-offset-1 transition-all duration-200 shadow-sm"
+                                        aria-label="删除留言"
+                                    >
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                                            <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                        </svg>
+                                    </button>
+                                ` : ''}
+                            </div>
+                        </div>
+                    `).join('');
+
+                    // 重新绑定删除按钮事件
+                    messagesListDiv.querySelectorAll('.delete-btn').forEach(button => {
+                        button.onclick = () => confirmDelete(button.dataset.messageId);
+                    });
+                }
+            }
+
+            // 控制模态框显示
+            const confirmModal = document.getElementById('confirmModal');
+            if (confirmModal) {
+                if (isModalShown) {
+                    confirmModal.classList.remove('hidden');
+                } else {
+                    confirmModal.classList.add('hidden');
+                }
+            }
+        }
+
+        // --- 事件处理函数 ---
+
+        // 处理留言文本输入
+        function handleNewMessageInput(e) {
+            newMessageText = e.target.value;
+            updateUI(); // 实时更新UI以启用/禁用发送按钮
+        }
+
+        // 处理图片文件选择
+        async function handleImageChange(e) {
+            const file = e.target.files[0];
+            currentImageError = ''; // 清除之前的错误
+
+            if (file) {
+                if (file.size > 500 * 1024) { // 500 KB 限制
+                    currentImageError = '图片文件过大，请选择小于 500KB 的图片。';
+                    selectedImageFile = null;
+                    currentImagePreview = null;
+                    e.target.value = ""; // 清空文件输入框
+                    updateUI();
+                    return;
+                }
+
+                selectedImageFile = file;
+                const reader = new FileReader();
+                reader.onloadend = () => {
+                    currentImagePreview = reader.result;
+                    updateUI(); // 更新UI显示图片预览
+                };
+                reader.readAsDataURL(file); // 读取文件为 Data URL (Base64)
+            } else {
+                selectedImageFile = null;
+                currentImagePreview = null;
+                updateUI(); // 更新UI清除图片预览
+            }
+        }
+
+        // 处理发送留言
+        async function handleSendMessage() {
+            if (newMessageText.trim() === '' && !selectedImageFile) return;
+
+            isSending = true;
+            currentImageError = '';
+            updateUI(); // 更新UI显示发送中状态
+
+            let imageData = null;
+            if (selectedImageFile) {
+                // 再次检查图片大小，以防在选择后文件被篡改
+                if (selectedImageFile.size > 500 * 1024) {
+                    currentImageError = '图片文件过大，请选择小于 500KB 的图片。';
+                    isSending = false;
+                    updateUI();
+                    return;
+                }
+                const reader = new FileReader();
+                reader.readAsDataURL(selectedImageFile);
+                imageData = await new Promise(resolve => {
+                    reader.onloadend = () => resolve(reader.result);
+                });
+            }
+
+            try {
+                const messagesCollectionRef = collection(db, `artifacts/${appId}/public/data/guestbook_messages`);
+                await addDoc(messagesCollectionRef, {
+                    userId: userId,
+                    message: newMessageText,
+                    imageData: imageData,
+                    timestamp: serverTimestamp(),
+                });
+                newMessageText = ''; // 清空文本框
+                selectedImageFile = null; // 清空选中的图片
+                currentImagePreview = null; // 清空图片预览
+                const imageInput = document.getElementById('imageInput');
+                if (imageInput) imageInput.value = ""; // 清空文件输入元素
+            } catch (error) {
+                console.error('添加留言时出错:', error);
+                // 可以在这里显示一个用户友好的错误消息
+            } finally {
+                isSending = false;
+                updateUI(); // 再次更新UI以清除发送状态和输入
+            }
+        }
+
+        // 显示确认删除模态框
+        function confirmDelete(id) {
+            messageToDeleteId = id;
+            isModalShown = true;
+            updateUI(); // 显示模态框
+        }
+
+        // 处理实际删除留言
+        async function handleDeleteMessage() {
+            if (!messageToDeleteId) return;
+
+            isModalShown = false; // 立即隐藏模态框
+            updateUI(); // 更新UI隐藏模态框
+
+            try {
+                const messageDocRef = doc(db, `artifacts/${appId}/public/data/guestbook_messages`, messageToDeleteId);
+                await deleteDoc(messageDocRef);
+                messageToDeleteId = null; // 清空要删除的留言ID
+            } catch (error) {
+                console.error('删除留言时出错:', error);
+                // 可以在这里显示一个用户友好的错误消息
+            }
+        }
+
+        // --- Firebase 初始化和监听器设置 ---
+
+        async function initFirebase() {
+            try {
+                app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+
+                // 在认证完成前显示加载动画
+                updateUI();
+
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                    } else {
+                        try {
+                            if (initialAuthToken) {
+                                await signInWithCustomToken(auth, initialAuthToken);
+                            } else {
+                                await signInAnonymously(auth);
+                            }
+                        } catch (error) {
+                            console.error('Firebase 认证错误:', error);
+                            // 如果认证失败，使用随机 UUID 作为备用用户ID
+                            userId = crypto.randomUUID();
+                        }
+                    }
+                    // 认证完成后，隐藏加载动画并设置Firestore监听器
+                    updateUI(); // 立即更新 UI 显示用户 ID 和内容
+                    setupFirestoreListener();
+                });
+            } catch (error) {
+                console.error('初始化 Firebase 失败:', error);
+                userId = null; // 初始化失败，将userId设为null
+                updateUI(); // 即使初始化失败也更新UI，可能显示错误信息
+            }
+        }
+
+        // 设置 Firestore 实时监听器
+        function setupFirestoreListener() {
+            if (db && userId) {
+                const messagesCollectionRef = collection(db, `artifacts/${appId}/public/data/guestbook_messages`);
+                const q = query(messagesCollectionRef); // 移除了orderBy以避免索引问题，数据将在客户端排序
+
+                onSnapshot(q, (snapshot) => {
+                    const fetchedMessages = [];
+                    snapshot.forEach((doc) => {
+                        const data = doc.data();
+                        fetchedMessages.push({
+                            id: doc.id,
+                            ...data,
+                            // 将 Firestore timestamp 转换为 Date 对象，以便客户端排序
+                            timestamp: data.timestamp ? data.timestamp.toDate() : new Date(),
+                        });
+                    });
+                    // 在内存中按时间戳倒序排序 (最新留言在前)
+                    messages = fetchedMessages.sort((a, b) => b.timestamp - a.timestamp);
+                    updateUI(); // 每次数据更新时重新渲染留言列表
+                }, (error) => {
+                    console.error("获取留言时出错:", error);
+                });
+            }
+        }
+
+        // --- 绑定事件监听器 ---
+        function bindEventListeners() {
+            document.getElementById('newMessageInput').addEventListener('input', handleNewMessageInput);
+            document.getElementById('imageInput').addEventListener('change', handleImageChange);
+            document.getElementById('sendMessageBtn').addEventListener('click', handleSendMessage);
+            document.getElementById('cancelDeleteBtn').addEventListener('click', () => {
+                isModalShown = false;
+                updateUI();
+            });
+            document.getElementById('confirmDeleteBtn').addEventListener('click', handleDeleteMessage);
+        }
+
+        // 页面加载完成后初始化 Firebase 并绑定事件
+        window.onload = () => {
+            initFirebase();
+            bindEventListeners();
+        };
+    </script>
+</body>
+</html>
